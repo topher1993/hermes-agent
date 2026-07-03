@@ -4705,7 +4705,13 @@ class AIAgent:
         return interruptible_streaming_api_call(self, api_kwargs, on_first_delta=on_first_delta)
 
     def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
-        """Forwarder — see ``agent.chat_completion_helpers.try_activate_fallback``."""
+        """Forwarder — see ``agent.chat_completion_helpers.try_activate_fallback``.
+
+        R9 policy exceptions (TuskNoFallbackError, FallbackDisabledError, and
+        FallbackAuditError from callers that audit before invoking this path)
+        intentionally propagate; the forwarder must not convert them to
+        ``False`` or generic fallback exhaustion.
+        """
         from agent.chat_completion_helpers import try_activate_fallback
         return try_activate_fallback(self, reason)
 

@@ -1181,6 +1181,27 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     auth resolution and client construction — no duplicated provider→key
     mappings.
     """
+    from hermes_cli.routing_policy import (
+        FallbackDisabledError,
+        TuskNoFallbackError,
+        load_routing_policy,
+        profile_allows_minimax_fallback,
+    )
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        _r9_profile = (get_active_profile_name() or "default").strip().lower()
+    except Exception:
+        _r9_profile = "default"
+    if _r9_profile == "tusk":
+        raise TuskNoFallbackError("Tusk is structurally prohibited from fallback")
+    if bool(getattr(agent, "_r9_fallback_policy_context", False)):
+        if profile_allows_minimax_fallback(_r9_profile) is not True:
+            raise FallbackDisabledError("MiniMax fallback is disabled for this profile")
+        _r9_policy = load_routing_policy()
+        if _r9_policy.non_qc_specialists_with_fallback is not True:
+            raise FallbackDisabledError(
+                "MiniMax fallback is disabled by routing_policy.non_qc_specialists_with_fallback"
+            )
     if reason in {FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit}:
         # Only start cooldown when leaving the primary provider.  If we're
         # already on a fallback and chain-switching, the primary wasn't the

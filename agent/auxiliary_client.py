@@ -4227,6 +4227,35 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    # ── MiniMax OAuth (Anthropic Messages over OAuth token provider) ───
+    if provider == "minimax-oauth":
+        try:
+            from agent.anthropic_adapter import build_anthropic_client
+            from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
+        except ImportError:
+            return None, None
+        try:
+            runtime = resolve_minimax_oauth_runtime_credentials(as_token_provider=True)
+        except Exception as exc:
+            logger.warning(
+                "resolve_provider_client: minimax-oauth requested but OAuth "
+                "credentials are unavailable (%s)",
+                exc,
+            )
+            return None, None
+        token_provider = runtime.get("api_key")
+        base_url = str(runtime.get("base_url") or "").strip().rstrip("/")
+        if not token_provider or not base_url:
+            return None, None
+        final_model = _normalize_resolved_model(model or "MiniMax-M3", provider)
+        real_client = build_anthropic_client(token_provider, base_url)
+        sync_client = AnthropicAuxiliaryClient(
+            real_client, final_model, token_provider, base_url, is_oauth=False,
+        )
+        if async_mode:
+            return AsyncAnthropicAuxiliaryClient(sync_client), final_model
+        return sync_client, final_model
+
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         if explicit_base_url:

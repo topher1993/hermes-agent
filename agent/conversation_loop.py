@@ -25,7 +25,7 @@ import ssl
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.conversation_compression import conversation_history_after_compression
@@ -66,7 +66,41 @@ from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
 
+if TYPE_CHECKING:
+    from hermes_cli.quota_exceeded import QuotaExceeded
+
 logger = logging.getLogger(__name__)
+
+
+def _prepare_r9_fallback_chain(agent: Any, fallback_model: str | None) -> None:
+    """Make the audited R9 MiniMax target the only remaining fallback.
+
+    ADR §16 intentionally hard-fails after MiniMax.  Do not preserve any
+    pre-existing tail of ``fallback_providers`` after the R9 target, otherwise a
+    MiniMax failure could silently triple-fallback to a third provider.
+    """
+
+    if not fallback_model:
+        return
+    provider, _, model = fallback_model.partition("/")
+    provider = provider.strip().lower()
+    model = model.strip()
+    if not provider or not model:
+        return
+    index = int(getattr(agent, "_fallback_index", 0) or 0)
+    agent._fallback_chain = list(getattr(agent, "_fallback_chain", None) or [])[:index] + [
+        {"provider": provider, "model": model}
+    ]
+    agent._r9_fallback_policy_context = True
+
+
+def _r9_quota_from_error(api_error: Exception, agent: Any) -> "QuotaExceeded | None":
+    """Return QuotaExceeded for the narrow R9 Codex GPT-5.5 quota signal."""
+
+    from hermes_cli.quota_exceeded import quota_from_error_if_applicable
+
+    return quota_from_error_if_applicable(api_error, agent)
+
 
 # Stable prefix of the local interrupt status string emitted when a turn is
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
@@ -2494,6 +2528,47 @@ def run_conversation(
                     retryable=classified.retryable,
                     reason=classified.reason.value,
                 )
+
+                # ── R9 Codex GPT-5.5 quota → audited MiniMax fallback ──
+                # This runs before credential-pool recovery, generic auth
+                # failover, and generic rate-limit status messaging.  Audit is
+                # fail-closed: if the row cannot be written, no fallback occurs.
+                _r9_quota_exc = _r9_quota_from_error(api_error, agent)
+                if _r9_quota_exc is not None:
+                    from agent.routing_policy_audit import (
+                        evaluate_r9_routing_policy,
+                        raise_policy_exception_for_decision,
+                        write_fallback_audit_row_or_raise,
+                    )
+
+                    _r9_decision = evaluate_r9_routing_policy(agent, _r9_quota_exc)
+                    write_fallback_audit_row_or_raise(_r9_decision, _r9_quota_exc)
+                    try:
+                        from hermes_cli.fallback_notifier import notify_recent_fallback_window
+
+                        notify_recent_fallback_window(
+                            audit_log_path=_r9_decision.audit_log_path,
+                            timeout_seconds=2.0,
+                        )
+                    except Exception as _r9_notify_exc:  # pragma: no cover
+                        logger.warning(
+                            "%sR9 fallback notifier failed after audit write: %s",
+                            agent.log_prefix,
+                            _r9_notify_exc,
+                        )
+                    if _r9_decision.event_type == "blocked_no_fallback":
+                        raise_policy_exception_for_decision(_r9_decision)
+                    _prepare_r9_fallback_chain(agent, _r9_decision.fallback_model)
+                    agent._buffer_status(
+                        "⚠️ Codex GPT-5.5 quota exhausted — switching to MiniMax-M3 fallback..."
+                    )
+                    if agent._try_activate_fallback(reason=FailoverReason.rate_limit):
+                        active_system_prompt = _sync_failover_system_message(
+                            agent, api_messages, active_system_prompt)
+                        retry_count = 0
+                        compression_attempts = 0
+                        _retry.primary_recovery_attempted = False
+                        continue
 
                 if (
                     classified.reason == FailoverReason.billing

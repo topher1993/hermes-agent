@@ -72,7 +72,7 @@ def _resolve_minimax_oauth_arm(req: _ResolveRequest) -> _ResolveResult:
                             "resolve_provider_client: minimax-oauth not logged in")
             return None, None
         final_model = _normalize_resolved_model(
-            req.model or _get_aux_model_for_provider(req.provider) or "MiniMax-M3", req.provider,
+            req.model or _get_aux_model_for_provider(req.provider) or "MiniMax-M3.1-Flash", req.provider,
         )
         return _route_client(req, _AuxProbeClientStub(api_key="", base_url=base_url), final_model)
 
@@ -103,7 +103,7 @@ def _resolve_minimax_oauth_arm(req: _ResolveRequest) -> _ResolveResult:
                         "resolve_provider_client: minimax-oauth credentials incomplete")
         return None, None
     final_model = _normalize_resolved_model(
-        req.model or _get_aux_model_for_provider(req.provider) or "MiniMax-M3", req.provider,
+        req.model or _get_aux_model_for_provider(req.provider) or "MiniMax-M3.1-Flash", req.provider,
     )
     from agent.anthropic_adapter import build_anthropic_client  # SDK-absent boundary, like _try_anthropic
     try:
